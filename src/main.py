@@ -1,6 +1,30 @@
+import requests
+
 def fetch_market_data(symbol):
-    print(f"Fetch market data for {symbol}... (simulation)")
-    return {"price": 100.0}
+    # print(f"Fetch market data for {symbol}... (simulation)")
+    # return {"price": 100.0}
+    api_key = ""
+    url = "https://www.alphavantage.co/query"
+    params = {
+        "function": "TIME_SERIES_INTRADAY",
+        "symbol": symbol,
+        "interval": "1min",
+        "apikey": api_key
+    }
+
+    response = requests.get(url, params=params)
+    data = response.json()
+
+    try:
+        time_series = data["Time Series (1min)"]
+        latest_timestamp = sorted[time_series.key()][-1]
+        latest_price = float(time_series[latest_timestamp]["4. close"])
+        print(f"Fetched market data for {symbol}: ${latest_price}")
+        return {"price": latest_price}
+    except Exception as e:
+        print("Error fetching data: ", e)
+        return {"price" : 0.0}
+
 
 def decide_trade(data):
     print("Deciding trade based on data... (simulation)")

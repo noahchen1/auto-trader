@@ -1,20 +1,5 @@
-
-
-# auto-trader/
-# │
-# ├── main.py                # Entry point
-# ├── config.py              # Configuration (API keys, settings)
-# ├── strategies/
-# │   ├── __init__.py
-# │   └── moving_average.py  # Example strategy
-# ├── data/
-# │   ├── fetcher.py         # Download market data
-# │   └── processor.py       # Clean/process data
-# ├── broker/
-# │   ├── __init__.py
-# │   └── alpaca.py          # Broker API integration
-# ├── ai/
-# │   └── model.py           # AI/ML models
-# ├── utils/
-# │   └── logger.py          # Logging utilities
-# └── requirements.txt       # Python dependencies
+certifi==2025.7.14
+charset-normalizer==3.4.2
+idna==3.10
+requests==2.32.4
+urllib3==2.5.0

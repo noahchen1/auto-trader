@@ -5,7 +5,7 @@ class MarketDataService:
     def get_history(self, symbol):
         df = yf.download(
             symbol,
-            period="6mo",
+            period="2y",
             interval="1d",
             auto_adjust=True,
             progress=False

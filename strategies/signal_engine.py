@@ -1,19 +1,17 @@
 MAX_POSITIONS = 5
-MIN_BUY_SCORE = 11
-MIN_BUY_CONFIDENCE = 58
-MAX_SELL_SCORE = 8
-MAX_SELL_CONFIDENCE = 42
-MIN_TREND_SCORE = 2
+MIN_BUY_RATING = 65
+MAX_SELL_RATING = 45
+MIN_MOMENTUM_FACTOR = 45
+MIN_RISK_FACTOR = 35
 
 
 def should_sell(stock, is_buy_candidate):
     return (
         not is_buy_candidate
         or stock["market_regime"] == "DEFENSIVE"
-        or stock["score"] <= MAX_SELL_SCORE
-        or stock["confidence"] <= MAX_SELL_CONFIDENCE
-        or stock["trend"] < MIN_TREND_SCORE
-        or stock["drawdown"] == 0
+        or stock["rating"] <= MAX_SELL_RATING
+        or stock["momentum_factor"] < MIN_MOMENTUM_FACTOR
+        or stock["risk_factor"] < MIN_RISK_FACTOR
     )
 
 
@@ -22,7 +20,7 @@ def generate_signals(results, current_positions=None):
 
     ranked = sorted(
         results,
-        key=lambda x: x["score"],
+        key=lambda x: x["rating"],
         reverse=True
     )
 
@@ -36,8 +34,7 @@ def generate_signals(results, current_positions=None):
         signal = "HOLD"
         is_buy_candidate = (
             i < MAX_POSITIONS
-            and stock["score"] >= MIN_BUY_SCORE
-            and stock["confidence"] >= MIN_BUY_CONFIDENCE
+            and stock["rating"] >= MIN_BUY_RATING
             and stock["market_regime"] != "DEFENSIVE"
         )
 

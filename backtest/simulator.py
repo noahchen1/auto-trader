@@ -13,22 +13,35 @@ class BacktestSimulator:
         benchmark_history,
         starting_cash=100000,
         lookback_days=253,
-        rebalance_days=20,
+        buy_check_days=5,
+        sell_check_days=1,
+        rebalance_days=None,
+        start_date=None,
+        end_date=None,
     ):
         self.price_history = price_history
         self.benchmark_history = benchmark_history
         self.starting_cash = starting_cash
         self.lookback_days = lookback_days
-        self.rebalance_days = rebalance_days
+        self.buy_check_days = rebalance_days or buy_check_days
+        self.sell_check_days = rebalance_days or sell_check_days
+        self.start_date = pd.Timestamp(start_date) if start_date else None
+        self.end_date = pd.Timestamp(end_date) if end_date else None
         self.cash = starting_cash
         self.positions = {}
         self.trades = []
         self.equity_curve = []
 
     def run(self):
-        dates = self._common_dates()
+        dates = self._trading_dates()
 
         for index, date in enumerate(dates):
+            if index < self.lookback_days:
+                continue
+
+            if not self._in_backtest_range(date):
+                continue
+
             prices = self._prices_on(date)
             portfolio_value = self._portfolio_value(prices)
 
@@ -40,13 +53,13 @@ class BacktestSimulator:
                 }
             )
 
-            if index < self.lookback_days:
+            sell_check = self._should_check(index, self.sell_check_days)
+            buy_check = self._should_check(index, self.buy_check_days)
+
+            if not sell_check and not buy_check:
                 continue
 
-            if (index - self.lookback_days) % self.rebalance_days != 0:
-                continue
-
-            self._rebalance(date)
+            self._evaluate_signals(date, sell_check, buy_check)
 
         return self.summary()
 
@@ -73,7 +86,7 @@ class BacktestSimulator:
             "equity_curve": equity,
         }
 
-    def _rebalance(self, date):
+    def _evaluate_signals(self, date, sell_check, buy_check):
         results = []
         benchmark_slice = self.benchmark_history.loc[:date].tail(self.lookback_days)
         market_regime = market_regime_score(benchmark_slice)
@@ -84,12 +97,21 @@ class BacktestSimulator:
             if len(stock_slice) < self.lookback_days:
                 continue
 
+            if stock_slice.index[-1] != date:
+                continue
+
             results.append(score_stock(symbol, stock_slice, market_regime))
 
         signals = generate_signals(results, self.positions)
 
-        self._process_sells(signals, date)
-        self._process_buys(signals, date)
+        if sell_check:
+            self._process_sells(signals, date)
+
+        if buy_check:
+            self._process_buys(signals, date)
+
+    def _should_check(self, index, check_days):
+        return (index - self.lookback_days) % check_days == 0
 
     def _process_sells(self, signals, date):
         for stock in signals:
@@ -100,6 +122,9 @@ class BacktestSimulator:
 
             position = self.positions.pop(symbol)
             value = position["shares"] * stock["price"]
+            cost_basis = position["shares"] * position["entry_price"]
+            pnl = value - cost_basis
+            holding_days = (date - position["entry_date"]).days
             self.cash += value
             self.trades.append(
                 {
@@ -110,6 +135,13 @@ class BacktestSimulator:
                     "price": stock["price"],
                     "value": value,
                     "score": stock["score"],
+                    "rating": stock["rating"],
+                    "entry_date": position["entry_date"],
+                    "entry_price": position["entry_price"],
+                    "cost_basis": cost_basis,
+                    "pnl": pnl,
+                    "pnl_pct": pnl / cost_basis if cost_basis else 0,
+                    "holding_days": holding_days,
                 }
             )
 
@@ -136,7 +168,9 @@ class BacktestSimulator:
             self.positions[stock["symbol"]] = {
                 "shares": shares,
                 "entry_price": stock["price"],
+                "entry_date": date,
                 "score": stock["score"],
+                "rating": stock["rating"],
             }
             self.cash -= value
             self.trades.append(
@@ -148,6 +182,10 @@ class BacktestSimulator:
                     "price": stock["price"],
                     "value": value,
                     "score": stock["score"],
+                    "rating": stock["rating"],
+                    "pnl": None,
+                    "pnl_pct": None,
+                    "holding_days": None,
                 }
             )
 
@@ -168,22 +206,34 @@ class BacktestSimulator:
         prices = {}
 
         for symbol, history in self.price_history.items():
-            if date not in history.index:
+            price = self._price_on_or_before(history, date)
+
+            if price is None:
                 continue
 
-            prices[symbol] = float(history.loc[date, "Close"])
+            prices[symbol] = price
 
         return prices
 
-    def _common_dates(self):
-        if not self.price_history or self.benchmark_history.empty:
+    def _trading_dates(self):
+        if self.benchmark_history.empty:
             return pd.DatetimeIndex([])
 
-        indexes = [history.index for history in self.price_history.values()]
-        indexes.append(self.benchmark_history.index)
-        common = indexes[0]
+        return self.benchmark_history.index.sort_values()
 
-        for index in indexes[1:]:
-            common = common.intersection(index)
+    def _price_on_or_before(self, history, date):
+        history = history.loc[:date]
 
-        return common.sort_values()
+        if history.empty:
+            return None
+
+        return float(history["Close"].iloc[-1])
+
+    def _in_backtest_range(self, date):
+        if self.start_date is not None and date < self.start_date:
+            return False
+
+        if self.end_date is not None and date > self.end_date:
+            return False
+
+        return True

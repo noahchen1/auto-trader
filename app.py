@@ -48,6 +48,8 @@ def run_simulation(symbols):
 
 DEFAULT_LOOKBACK_DAYS = 253
 DEFAULT_TRADES_CSV = "transactions.csv"
+DEFAULT_STOP_LOSS_PCT = 0.05
+DEFAULT_TRAILING_STOP_PCT = 0.15
 
 
 def run_backtest(
@@ -58,6 +60,8 @@ def run_backtest(
     start_date=None,
     end_date=None,
     trades_csv=None,
+    stop_loss_pct=DEFAULT_STOP_LOSS_PCT,
+    trailing_stop_pct=DEFAULT_TRAILING_STOP_PCT,
 ):
     market = MarketDataService()
     history = {}
@@ -81,6 +85,8 @@ def run_backtest(
         sell_check_days=sell_check_days,
         start_date=start_date,
         end_date=end_date,
+        stop_loss_pct=stop_loss_pct,
+        trailing_stop_pct=trailing_stop_pct,
     )
     result = simulator.run()
 
@@ -92,6 +98,8 @@ def run_backtest(
     print(f"End date:      {end_date or 'Downloaded history end'}")
     print(f"Buy checks:    Every {buy_check_days} trading day(s)")
     print(f"Sell checks:   Every {sell_check_days} trading day(s)")
+    print(f"Hard stop:     {stop_loss_pct:.2%}")
+    print(f"Trailing stop: {trailing_stop_pct:.2%}")
     print(f"Trades:        {len(result['trades'])}")
     print_transaction_history(result["trades"], trades_limit)
 
@@ -137,6 +145,7 @@ def print_transaction_history(trades, limit=None):
         f"{'Price':>11} "
         f"{'Value':>13} "
         f"{'Rating':>7} "
+        f"{'Reason':14} "
         f"{'P/L':>12} "
         f"{'P/L %':>8} "
         f"{'Days':>6}"
@@ -156,6 +165,7 @@ def print_transaction_history(trades, limit=None):
             f"${trade['price']:10.2f} "
             f"${trade['value']:12,.2f} "
             f"{trade['rating']:7.2f} "
+            f"{trade.get('reason', '-'):14} "
             f"{format_optional_money(trade['pnl']):>12} "
             f"{format_optional_pct(trade['pnl_pct']):>8} "
             f"{holding_days:>6}"
@@ -175,6 +185,7 @@ def export_transaction_history(trades, path):
         "price",
         "value",
         "rating",
+        "reason",
         "entry_date",
         "entry_price",
         "cost_basis",
@@ -232,6 +243,15 @@ def positive_int(value):
 
     if parsed < 1:
         raise argparse.ArgumentTypeError("must be at least 1")
+
+    return parsed
+
+
+def pct_float(value):
+    parsed = float(value)
+
+    if parsed < 0 or parsed >= 1:
+        raise argparse.ArgumentTypeError("must be between 0 and 1")
 
     return parsed
 
@@ -319,6 +339,18 @@ if __name__ == "__main__":
         help="How often the backtest checks existing positions for sells, in trading days.",
     )
     parser.add_argument(
+        "--stop-loss-pct",
+        type=pct_float,
+        default=DEFAULT_STOP_LOSS_PCT,
+        help="Hard stop loss from entry price, as a decimal. Use 0 to disable.",
+    )
+    parser.add_argument(
+        "--trailing-stop-pct",
+        type=pct_float,
+        default=DEFAULT_TRAILING_STOP_PCT,
+        help="Trailing stop from highest close since entry, as a decimal. Use 0 to disable.",
+    )
+    parser.add_argument(
         "--start-date",
         type=valid_date,
         help="Backtest start date, formatted YYYY-MM-DD.",
@@ -343,6 +375,8 @@ if __name__ == "__main__":
             start_date=args.start_date,
             end_date=args.end_date,
             trades_csv=None if args.no_trades_csv else args.trades_csv,
+            stop_loss_pct=args.stop_loss_pct,
+            trailing_stop_pct=args.trailing_stop_pct,
         )
     else:
         run_simulation(symbols)

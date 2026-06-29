@@ -18,6 +18,8 @@ class BacktestSimulator:
         rebalance_days=None,
         start_date=None,
         end_date=None,
+        stop_loss_pct=0.08,
+        trailing_stop_pct=0.12,
     ):
         self.price_history = price_history
         self.benchmark_history = benchmark_history
@@ -27,6 +29,8 @@ class BacktestSimulator:
         self.sell_check_days = rebalance_days or sell_check_days
         self.start_date = pd.Timestamp(start_date) if start_date else None
         self.end_date = pd.Timestamp(end_date) if end_date else None
+        self.stop_loss_pct = stop_loss_pct
+        self.trailing_stop_pct = trailing_stop_pct
         self.cash = starting_cash
         self.positions = {}
         self.trades = []
@@ -43,6 +47,7 @@ class BacktestSimulator:
                 continue
 
             prices = self._prices_on(date)
+            self._process_stop_losses(date, prices)
             portfolio_value = self._portfolio_value(prices)
 
             self.equity_curve.append(
@@ -120,29 +125,13 @@ class BacktestSimulator:
             if stock["signal"] != "SELL" or symbol not in self.positions:
                 continue
 
-            position = self.positions.pop(symbol)
-            value = position["shares"] * stock["price"]
-            cost_basis = position["shares"] * position["entry_price"]
-            pnl = value - cost_basis
-            holding_days = (date - position["entry_date"]).days
-            self.cash += value
-            self.trades.append(
-                {
-                    "date": date,
-                    "symbol": symbol,
-                    "side": "SELL",
-                    "shares": position["shares"],
-                    "price": stock["price"],
-                    "value": value,
-                    "score": stock["score"],
-                    "rating": stock["rating"],
-                    "entry_date": position["entry_date"],
-                    "entry_price": position["entry_price"],
-                    "cost_basis": cost_basis,
-                    "pnl": pnl,
-                    "pnl_pct": pnl / cost_basis if cost_basis else 0,
-                    "holding_days": holding_days,
-                }
+            self._sell_position(
+                symbol=symbol,
+                date=date,
+                price=stock["price"],
+                score=stock["score"],
+                rating=stock["rating"],
+                reason="SIGNAL",
             )
 
     def _process_buys(self, signals, date):
@@ -169,6 +158,7 @@ class BacktestSimulator:
                 "shares": shares,
                 "entry_price": stock["price"],
                 "entry_date": date,
+                "highest_price": stock["price"],
                 "score": stock["score"],
                 "rating": stock["rating"],
             }
@@ -183,11 +173,73 @@ class BacktestSimulator:
                     "value": value,
                     "score": stock["score"],
                     "rating": stock["rating"],
+                    "reason": "ENTRY",
                     "pnl": None,
                     "pnl_pct": None,
                     "holding_days": None,
                 }
             )
+
+    def _process_stop_losses(self, date, prices):
+        for symbol, position in list(self.positions.items()):
+            price = prices.get(symbol)
+
+            if price is None:
+                continue
+
+            position["highest_price"] = max(position["highest_price"], price)
+            hard_stop_price = position["entry_price"] * (1 - self.stop_loss_pct)
+            trailing_stop_price = position["highest_price"] * (
+                1 - self.trailing_stop_pct
+            )
+
+            if self.stop_loss_pct > 0 and price <= hard_stop_price:
+                self._sell_position(
+                    symbol=symbol,
+                    date=date,
+                    price=price,
+                    score=position["score"],
+                    rating=position["rating"],
+                    reason="HARD_STOP",
+                )
+                continue
+
+            if self.trailing_stop_pct > 0 and price <= trailing_stop_price:
+                self._sell_position(
+                    symbol=symbol,
+                    date=date,
+                    price=price,
+                    score=position["score"],
+                    rating=position["rating"],
+                    reason="TRAILING_STOP",
+                )
+
+    def _sell_position(self, symbol, date, price, score, rating, reason):
+        position = self.positions.pop(symbol)
+        value = position["shares"] * price
+        cost_basis = position["shares"] * position["entry_price"]
+        pnl = value - cost_basis
+        holding_days = (date - position["entry_date"]).days
+        self.cash += value
+        self.trades.append(
+            {
+                "date": date,
+                "symbol": symbol,
+                "side": "SELL",
+                "shares": position["shares"],
+                "price": price,
+                "value": value,
+                "score": score,
+                "rating": rating,
+                "reason": reason,
+                "entry_date": position["entry_date"],
+                "entry_price": position["entry_price"],
+                "cost_basis": cost_basis,
+                "pnl": pnl,
+                "pnl_pct": pnl / cost_basis if cost_basis else 0,
+                "holding_days": holding_days,
+            }
+        )
 
     def _portfolio_value(self, prices):
         value = self.cash

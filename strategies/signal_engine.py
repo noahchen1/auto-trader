@@ -1,8 +1,24 @@
 MAX_POSITIONS = 5
 MIN_BUY_SCORE = 11
 MIN_BUY_CONFIDENCE = 58
+MAX_SELL_SCORE = 8
+MAX_SELL_CONFIDENCE = 42
+MIN_TREND_SCORE = 2
 
-def generate_signals(results):
+
+def should_sell(stock, is_buy_candidate):
+    return (
+        not is_buy_candidate
+        or stock["market_regime"] == "DEFENSIVE"
+        or stock["score"] <= MAX_SELL_SCORE
+        or stock["confidence"] <= MAX_SELL_CONFIDENCE
+        or stock["trend"] < MIN_TREND_SCORE
+        or stock["drawdown"] == 0
+    )
+
+
+def generate_signals(results, current_positions=None):
+    current_positions = current_positions or {}
 
     ranked = sorted(
         results,
@@ -13,16 +29,23 @@ def generate_signals(results):
     signals = []
 
     for i, stock in enumerate(ranked):
+        stock = stock.copy()
+        symbol = stock["symbol"]
+        is_held = symbol in current_positions
 
         signal = "HOLD"
-
-        if (
+        is_buy_candidate = (
             i < MAX_POSITIONS
             and stock["score"] >= MIN_BUY_SCORE
             and stock["confidence"] >= MIN_BUY_CONFIDENCE
             and stock["market_regime"] != "DEFENSIVE"
-        ):
+        )
+
+        if is_buy_candidate and not is_held:
             signal = "BUY"
+
+        if is_held and should_sell(stock, is_buy_candidate):
+            signal = "SELL"
 
         stock["rank"] = i + 1
         stock["signal"] = signal

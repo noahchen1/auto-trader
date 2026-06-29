@@ -1,4 +1,6 @@
 MAX_POSITIONS = 5
+MIN_BUY_SCORE = 11
+MIN_BUY_CONFIDENCE = 58
 
 def generate_signals(results):
 
@@ -14,7 +16,12 @@ def generate_signals(results):
 
         signal = "HOLD"
 
-        if i < MAX_POSITIONS:
+        if (
+            i < MAX_POSITIONS
+            and stock["score"] >= MIN_BUY_SCORE
+            and stock["confidence"] >= MIN_BUY_CONFIDENCE
+            and stock["market_regime"] != "DEFENSIVE"
+        ):
             signal = "BUY"
 
         stock["rank"] = i + 1

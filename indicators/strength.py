@@ -1,6 +1,9 @@
 def relative_strength_score(df):
     close = df["Close"]
 
+    if len(close) < 126:
+        return 0
+
     current = close.iloc[-1]
 
     score = 0

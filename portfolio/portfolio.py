@@ -13,6 +13,10 @@ class Portfolio:
             if s["signal"] == "BUY"
         ]
 
+        if not buys:
+            print("\nNo BUY signals passed the risk filters. Staying in cash.")
+            return
+
         allocation = self.cash / len(buys)
 
         for stock in buys:

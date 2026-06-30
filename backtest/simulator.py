@@ -20,6 +20,8 @@ class BacktestSimulator:
         end_date=None,
         stop_loss_pct=0.08,
         trailing_stop_pct=0.12,
+        initial_cash=None,
+        initial_positions=None,
     ):
         self.price_history = price_history
         self.benchmark_history = benchmark_history
@@ -31,8 +33,10 @@ class BacktestSimulator:
         self.end_date = pd.Timestamp(end_date) if end_date else None
         self.stop_loss_pct = stop_loss_pct
         self.trailing_stop_pct = trailing_stop_pct
-        self.cash = starting_cash
-        self.positions = {}
+        self.cash = starting_cash if initial_cash is None else initial_cash
+        self.positions = self._prepare_initial_positions(initial_positions or {})
+        self._starting_value_locked = not self.positions
+        self.pending_orders = []
         self.trades = []
         self.equity_curve = []
 
@@ -46,7 +50,14 @@ class BacktestSimulator:
             if not self._in_backtest_range(date):
                 continue
 
+            self._activate_initial_positions(date)
+            self._execute_pending_orders(date)
             prices = self._prices_on(date)
+
+            if not self._starting_value_locked:
+                self.starting_cash = self._portfolio_value(prices)
+                self._starting_value_locked = True
+
             self._process_stop_losses(date, prices)
             portfolio_value = self._portfolio_value(prices)
 
@@ -125,59 +136,44 @@ class BacktestSimulator:
             if stock["signal"] != "SELL" or symbol not in self.positions:
                 continue
 
-            self._sell_position(
+            self._queue_order(
+                side="SELL",
                 symbol=symbol,
-                date=date,
-                price=stock["price"],
                 score=stock["score"],
                 rating=stock["rating"],
                 reason="SIGNAL",
+                signal_date=date,
             )
 
     def _process_buys(self, signals, date):
+        pending_sell_symbols = {
+            order["symbol"]
+            for order in self.pending_orders
+            if order["side"] == "SELL"
+        }
         buys = [
             stock
             for stock in signals
             if stock["signal"] == "BUY"
             and stock["symbol"] not in self.positions
+            and not self._has_pending_order(stock["symbol"], "BUY")
         ]
 
-        open_slots = max(0, 5 - len(self.positions))
+        projected_positions = len(self.positions) - len(pending_sell_symbols)
+        open_slots = max(0, 5 - projected_positions)
         buys = buys[:open_slots]
 
         if not buys or self.cash <= 0:
             return
 
-        allocation = self.cash / len(buys)
-
         for stock in buys:
-            shares = allocation / stock["price"]
-            value = shares * stock["price"]
-
-            self.positions[stock["symbol"]] = {
-                "shares": shares,
-                "entry_price": stock["price"],
-                "entry_date": date,
-                "highest_price": stock["price"],
-                "score": stock["score"],
-                "rating": stock["rating"],
-            }
-            self.cash -= value
-            self.trades.append(
-                {
-                    "date": date,
-                    "symbol": stock["symbol"],
-                    "side": "BUY",
-                    "shares": shares,
-                    "price": stock["price"],
-                    "value": value,
-                    "score": stock["score"],
-                    "rating": stock["rating"],
-                    "reason": "ENTRY",
-                    "pnl": None,
-                    "pnl_pct": None,
-                    "holding_days": None,
-                }
+            self._queue_order(
+                side="BUY",
+                symbol=stock["symbol"],
+                score=stock["score"],
+                rating=stock["rating"],
+                reason="ENTRY",
+                signal_date=date,
             )
 
     def _process_stop_losses(self, date, prices):
@@ -194,27 +190,152 @@ class BacktestSimulator:
             )
 
             if self.stop_loss_pct > 0 and price <= hard_stop_price:
-                self._sell_position(
+                self._queue_order(
+                    side="SELL",
                     symbol=symbol,
-                    date=date,
-                    price=price,
                     score=position["score"],
                     rating=position["rating"],
                     reason="HARD_STOP",
+                    signal_date=date,
                 )
                 continue
 
             if self.trailing_stop_pct > 0 and price <= trailing_stop_price:
-                self._sell_position(
+                self._queue_order(
+                    side="SELL",
                     symbol=symbol,
-                    date=date,
-                    price=price,
                     score=position["score"],
                     rating=position["rating"],
                     reason="TRAILING_STOP",
+                    signal_date=date,
                 )
 
-    def _sell_position(self, symbol, date, price, score, rating, reason):
+    def _queue_order(self, side, symbol, score, rating, reason, signal_date):
+        if self._has_pending_order(symbol, side):
+            return
+
+        self.pending_orders.append(
+            {
+                "side": side,
+                "symbol": symbol,
+                "score": score,
+                "rating": rating,
+                "reason": reason,
+                "signal_date": signal_date,
+            }
+        )
+
+    def _has_pending_order(self, symbol, side=None):
+        for order in self.pending_orders:
+            if order["symbol"] != symbol:
+                continue
+
+            if side is None or order["side"] == side:
+                return True
+
+        return False
+
+    def _execute_pending_orders(self, date):
+        if not self.pending_orders:
+            return
+
+        executable = []
+        remaining = []
+
+        for order in self.pending_orders:
+            if order["signal_date"] < date:
+                executable.append(order)
+            else:
+                remaining.append(order)
+
+        self.pending_orders = remaining
+
+        if not executable:
+            return
+
+        open_prices = self._open_prices_on(date)
+        sells = [order for order in executable if order["side"] == "SELL"]
+        buys = [order for order in executable if order["side"] == "BUY"]
+
+        for order in sells:
+            symbol = order["symbol"]
+            price = open_prices.get(symbol)
+
+            if symbol not in self.positions:
+                continue
+
+            if price is None:
+                self.pending_orders.append(order)
+                continue
+
+            self._sell_position(
+                symbol=symbol,
+                date=date,
+                price=price,
+                score=order["score"],
+                rating=order["rating"],
+                reason=order["reason"],
+                signal_date=order["signal_date"],
+            )
+
+        buys = [
+            order
+            for order in buys
+            if order["symbol"] not in self.positions
+            and open_prices.get(order["symbol"]) is not None
+        ]
+
+        open_slots = max(0, 5 - len(self.positions))
+        buys = buys[:open_slots]
+
+        if not buys or self.cash <= 0:
+            return
+
+        allocation = self.cash / len(buys)
+
+        for order in buys:
+            symbol = order["symbol"]
+            price = open_prices[symbol]
+            shares = allocation / price
+            value = shares * price
+
+            self.positions[symbol] = {
+                "shares": shares,
+                "entry_price": price,
+                "entry_date": date,
+                "highest_price": price,
+                "score": order["score"],
+                "rating": order["rating"],
+            }
+            self.cash -= value
+            self.trades.append(
+                {
+                    "date": date,
+                    "signal_date": order["signal_date"],
+                    "symbol": symbol,
+                    "side": "BUY",
+                    "shares": shares,
+                    "price": price,
+                    "value": value,
+                    "score": order["score"],
+                    "rating": order["rating"],
+                    "reason": order["reason"],
+                    "pnl": None,
+                    "pnl_pct": None,
+                    "holding_days": None,
+                }
+            )
+
+    def _sell_position(
+        self,
+        symbol,
+        date,
+        price,
+        score,
+        rating,
+        reason,
+        signal_date=None,
+    ):
         position = self.positions.pop(symbol)
         value = position["shares"] * price
         cost_basis = position["shares"] * position["entry_price"]
@@ -224,6 +345,7 @@ class BacktestSimulator:
         self.trades.append(
             {
                 "date": date,
+                "signal_date": signal_date,
                 "symbol": symbol,
                 "side": "SELL",
                 "shares": position["shares"],
@@ -254,11 +376,46 @@ class BacktestSimulator:
 
         return value
 
+    def _prepare_initial_positions(self, positions):
+        prepared = {}
+
+        for symbol, position in positions.items():
+            prepared[symbol] = position.copy()
+            prepared[symbol]["entry_date"] = position.get("entry_date")
+
+        return prepared
+
+    def _activate_initial_positions(self, date):
+        for symbol, position in self.positions.items():
+            if position.get("entry_date") is None:
+                position["entry_date"] = date
+
+            if position["entry_date"] > date:
+                position["entry_date"] = date
+
+            price = self._price_on_or_before(self.price_history.get(symbol), date)
+
+            if price is not None:
+                position["highest_price"] = max(position["highest_price"], price)
+
     def _prices_on(self, date):
         prices = {}
 
         for symbol, history in self.price_history.items():
             price = self._price_on_or_before(history, date)
+
+            if price is None:
+                continue
+
+            prices[symbol] = price
+
+        return prices
+
+    def _open_prices_on(self, date):
+        prices = {}
+
+        for symbol, history in self.price_history.items():
+            price = self._open_on(history, date)
 
             if price is None:
                 continue
@@ -274,12 +431,21 @@ class BacktestSimulator:
         return self.benchmark_history.index.sort_values()
 
     def _price_on_or_before(self, history, date):
+        if history is None:
+            return None
+
         history = history.loc[:date]
 
         if history.empty:
             return None
 
         return float(history["Close"].iloc[-1])
+
+    def _open_on(self, history, date):
+        if history is None or date not in history.index:
+            return None
+
+        return float(history.loc[date, "Open"])
 
     def _in_backtest_range(self, date):
         if self.start_date is not None and date < self.start_date:

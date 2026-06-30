@@ -1,0 +1,23 @@
+{
+  "cash": 25000,
+  "positions": [
+    {
+      "symbol": "AAPL",
+      "shares": 10,
+      "entry_price": 190,
+      "entry_date": "2024-01-02"
+    },
+    {
+      "symbol": "MSFT",
+      "shares": 8,
+      "entry_price": 410,
+      "entry_date": "2024-01-02"
+    },
+    {
+      "symbol": "NVDA",
+      "shares": 20,
+      "entry_price": 95,
+      "entry_date": "2024-01-02"
+    }
+  ]
+}
